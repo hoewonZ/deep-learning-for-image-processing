@@ -152,6 +152,9 @@ class MetricLogger(object):
     def add_meter(self, name, meter):
         self.meters[name] = meter
 
+    '''
+        这个方法是dataloader每次yield batch时候的方法，会在yield batch（下面的obj）之前记录一下时间，然后等下一次yield时，记录上一次完成时间，并打印记录。
+    '''
     def log_every(self, iterable, print_freq, header=None):
         i = 0
         if not header:
@@ -179,7 +182,7 @@ class MetricLogger(object):
         MB = 1024.0 * 1024.0
         for obj in iterable:
             data_time.update(time.time() - end)
-            yield obj
+            yield obj # 这里按照batch_size 会生成一个batch，然后程序直接返回，不继续执行下面代码。等待下一次迭代(next)时，又调到这个yield时，执行下面的一系列语句，然后又走回到yield 这里退出，这样保证了开始和结束时间是obj被消费完的时间。
             iter_time.update(time.time() - end)
             if i % print_freq == 0 or i == len(iterable) - 1:
                 eta_second = int(iter_time.global_avg * (len(iterable) - i))
