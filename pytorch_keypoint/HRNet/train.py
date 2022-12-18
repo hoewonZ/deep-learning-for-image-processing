@@ -44,6 +44,7 @@ def main(args):
     # 用来保存coco_info的文件
     results_file = "results{}.txt".format(datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 
+    # 读取kp的关键点基本信息，名称、权重等
     with open(args.keypoints_path, "r") as f:
         person_kps_info = json.load(f)
 
@@ -53,17 +54,17 @@ def main(args):
                            dtype=np.float32).reshape((args.num_joints,))
     data_transform = {
         "train": transforms.Compose([
-            transforms.HalfBody(0.3, person_kps_info["upper_body_ids"], person_kps_info["lower_body_ids"]),
-            transforms.AffineTransform(scale=(0.65, 1.35), rotation=(-45, 45), fixed_size=fixed_size),
-            transforms.RandomHorizontalFlip(0.5, person_kps_info["flip_pairs"]),
+            transforms.HalfBody(0.3, person_kps_info["upper_body_ids"], person_kps_info["lower_body_ids"]),# 随机截取上下一半
+            transforms.AffineTransform(scale=(0.65, 1.35), rotation=(-45, 45), fixed_size=fixed_size),# 仿射变换
+            transforms.RandomHorizontalFlip(0.5, person_kps_info["flip_pairs"]), # 随机水平翻转
             transforms.KeypointToHeatMap(heatmap_hw=heatmap_hw, gaussian_sigma=2, keypoints_weights=kps_weights),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            transforms.ToTensor(), # 把Image通道h*w*c转化为c*h*w，并把像素/255，对应的heatmap应该没有转变，生成的时候就是通道在前面（keynum）
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # img归一化，mean和std是官方统计的结果
         ]),
         "val": transforms.Compose([
             transforms.AffineTransform(scale=(1.25, 1.25), fixed_size=fixed_size),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # imagenet
         ])
     }
 
@@ -183,8 +184,8 @@ if __name__ == "__main__":
     # 训练设备类型
     parser.add_argument('--device', default='cuda:0', help='device')
     # 训练数据集的根目录(coco2017)
-    parser.add_argument('--data-path', default='/data/coco2017', help='dataset')
-    # COCO数据集人体关键点信息
+    parser.add_argument('--data-path', default='./data/coco2017', help='dataset')
+    # COCO数据集人体关键点信息 （关键点怎么排序，关键点怎么连接成骨架，关键点权重，上半身和下半身的序号）
     parser.add_argument('--keypoints-path', default="./person_keypoints.json", type=str,
                         help='person_keypoints.json path')
     # 原项目提供的验证集person检测信息，如果要使用GT信息，直接将该参数置为None，建议设置成None
@@ -198,8 +199,8 @@ if __name__ == "__main__":
     parser.add_argument('--resume', default='', type=str, help='resume from checkpoint')
     # 指定接着从哪个epoch数开始训练
     parser.add_argument('--start-epoch', default=0, type=int, help='start epoch')
-    # 训练的总epoch数
-    parser.add_argument('--epochs', default=210, type=int, metavar='N',
+    # 训练的总epoch数，default=210
+    parser.add_argument('--epochs', default=1, type=int, metavar='N',
                         help='number of total epochs to run')
     # 针对torch.optim.lr_scheduler.MultiStepLR的参数
     parser.add_argument('--lr-steps', default=[170, 200], nargs='+', type=int, help='decrease lr every step-size epochs')
@@ -213,8 +214,8 @@ if __name__ == "__main__":
     parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                         metavar='W', help='weight decay (default: 1e-4)',
                         dest='weight_decay')
-    # 训练的batch size
-    parser.add_argument('--batch-size', default=32, type=int, metavar='N',
+    # 训练的batch size，default=32
+    parser.add_argument('--batch-size', default=4, type=int, metavar='N',
                         help='batch size when training.')
     # 是否使用混合精度训练(需要GPU支持混合精度)
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
