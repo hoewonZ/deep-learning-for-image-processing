@@ -26,6 +26,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch,
 
     mse = KpLoss()
     mloss = torch.zeros(1).to(device)  # mean losses
+    # data_loader中yield了batchsize大小的images（tensor）和targets（tuple）
     for i, [images, targets] in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         images = torch.stack([image.to(device) for image in images])
 
@@ -35,12 +36,13 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch,
 
             losses = mse(results, targets)
 
-        # reduce losses over all GPUs for logging purpose
+        # reduce losses over all GPUs for logging purpose，单gpu就是这个losses，多个gpu上的loss会合并再返回
         loss_dict_reduced = utils.reduce_dict({"losses": losses})
+        # 把所有gpu的loss加在一起
         losses_reduced = sum(loss for loss in loss_dict_reduced.values())
-
+        # 返回合并后的loss值，item只对有一个元素的tensor有效，item返回的是原式python的数值型，为了计算平均损失用
         loss_value = losses_reduced.item()
-        # 记录训练损失
+        # 记录训练损失,mloss是平均的，因此计算新平均是，把mloss乘以轮数再加上当前的loss的总和是全部loss，然后再求均值
         mloss = (mloss * i + loss_value) / (i + 1)  # update mean losses
 
         if not math.isfinite(loss_value):  # 当计算的损失为无穷大时停止训练
