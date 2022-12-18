@@ -153,17 +153,23 @@ def resize_pad(img: np.ndarray, size: tuple):
 
     return resize_img, reverse_trans
 
-
+# 所以bbox是wmin,hmin,w,h.
+# w是距离xmin，h是距离hmin,这是coco数据集的标记方式。
+# https://blog.csdn.net/flyfish1986/article/details/117133648 参考这个看其他数据集bbox的坐标定义格式。
+# fixed_size =[h,w]
+# 这个方法是调整原始bbox的高宽比与fixed_size相同，但是没有进行放缩成fixed_size
 def adjust_box(xmin: float, ymin: float, w: float, h: float, fixed_size: Tuple[float, float]):
     """通过增加w或者h的方式保证输入图片的长宽比固定"""
     xmax = xmin + w
     ymax = ymin + h
-
+    # 高宽比
     hw_ratio = fixed_size[0] / fixed_size[1]
+    # 如果图像bbox的高宽比大于fixed_size，说明bbox窄了，需要在w两侧补padding
     if h / w > hw_ratio:
         # 需要在w方向padding
-        wi = h / hw_ratio
+        wi = h / hw_ratio # h/wi=hw_ratio  =>  wi=h/w_ratio
         pad_w = (wi - w) / 2
+        # 左右两边各padding一部分
         xmin = xmin - pad_w
         xmax = xmax + pad_w
     else:
@@ -173,6 +179,7 @@ def adjust_box(xmin: float, ymin: float, w: float, h: float, fixed_size: Tuple[f
         ymin = ymin - pad_h
         ymax = ymax + pad_h
 
+    # 返回调整高宽比之后的bbox 左上和右下的真实坐标
     return xmin, ymin, xmax, ymax
 
 
@@ -226,7 +233,7 @@ class Normalize(object):
         image = F.normalize(image, mean=self.mean, std=self.std)
         return image, target
 
-
+# 对原始图片没有修改半身，而是修改了bbox的尺寸
 class HalfBody(object):
     def __init__(self, p: float = 0.3, upper_body_ids=None, lower_body_ids=None):
         assert upper_body_ids is not None
@@ -270,7 +277,7 @@ class HalfBody(object):
 
         return image, target
 
-
+# 仿射变换中，把图片裁剪等处理，处理成fixed_size
 class AffineTransform(object):
     """scale+rotation"""
     def __init__(self,
@@ -282,43 +289,49 @@ class AffineTransform(object):
         self.fixed_size = fixed_size
 
     def __call__(self, img, target):
+        # 根据fixed_size的高宽比，对bbox的原始数据进行调整，并返回调整后真实图像的bbox左上和右下的坐标。
         src_xmin, src_ymin, src_xmax, src_ymax = adjust_box(*target["box"], fixed_size=self.fixed_size)
+        # 重新计算符合fixed_size高宽比的bbox宽、高和中心点
         src_w = src_xmax - src_xmin
         src_h = src_ymax - src_ymin
-        src_center = np.array([(src_xmin + src_xmax) / 2, (src_ymin + src_ymax) / 2])
-        src_p2 = src_center + np.array([0, -src_h / 2])  # top middle
-        src_p3 = src_center + np.array([src_w / 2, 0])   # right middle
+        src_center = np.array([(src_xmin + src_xmax) / 2, (src_ymin + src_ymax) / 2]) # [w,h]
+        src_p2 = src_center + np.array([0, -src_h / 2])  # top middle 中心点对应上边框的中点,宽不变，高度减一半
+        src_p3 = src_center + np.array([src_w / 2, 0])   # right middle 中心点对应有边框中点，高不变，宽度加一半
 
-        dst_center = np.array([(self.fixed_size[1] - 1) / 2, (self.fixed_size[0] - 1) / 2])
-        dst_p2 = np.array([(self.fixed_size[1] - 1) / 2, 0])  # top middle
+        # 把当前图片中bbx的三个点，重新映射到当前图像的以fixed_size为坐标的电上
+        dst_center = np.array([(self.fixed_size[1] - 1) / 2, (self.fixed_size[0] - 1) / 2]) # fixed_size[256,192]的中点位置，不过这里用的是宽高[w,h]，是个相对的偏移量吧
+        dst_p2 = np.array([(self.fixed_size[1] - 1) / 2, 0])  # top middle fixed_size ，这里计算的是fixed_size 上边中间，这里应该是个偏移量，不存在真实的位置。
         dst_p3 = np.array([self.fixed_size[1] - 1, (self.fixed_size[0] - 1) / 2])  # right middle
 
+        # 随机在0.65 - 1.25 倍数放缩
         if self.scale is not None:
             scale = random.uniform(*self.scale)
             src_w = src_w * scale
             src_h = src_h * scale
+            # 放缩后的高宽除以2 加到上边框和有边框中点
             src_p2 = src_center + np.array([0, -src_h / 2])  # top middle
             src_p3 = src_center + np.array([src_w / 2, 0])   # right middle
-
+        # 随机在顺、逆时针转45度
         if self.rotation is not None:
             angle = random.randint(*self.rotation)  # 角度制
             angle = angle / 180 * math.pi  # 弧度制
+            # 得到旋转后上边框中点和有边框中点坐标
             src_p2 = src_center + np.array([src_h / 2 * math.sin(angle), -src_h / 2 * math.cos(angle)])
             src_p3 = src_center + np.array([src_w / 2 * math.cos(angle), src_w / 2 * math.sin(angle)])
-
+        # 通过调整后的三个坐标计算仿射变换矩阵，dst的坐标应该是个相对偏移量,这三个点构成了一个三角形
         src = np.stack([src_center, src_p2, src_p3]).astype(np.float32)
         dst = np.stack([dst_center, dst_p2, dst_p3]).astype(np.float32)
 
-        trans = cv2.getAffineTransform(src, dst)  # 计算正向仿射变换矩阵
+        trans = cv2.getAffineTransform(src, dst)  # 计算正向仿射变换矩阵,2*3变换矩阵
         dst /= 4  # 网络预测的heatmap尺寸是输入图像的1/4
         reverse_trans = cv2.getAffineTransform(dst, src)  # 计算逆向仿射变换矩阵，方便后续还原
 
         # 对图像进行仿射变换
         resize_img = cv2.warpAffine(img,
                                     trans,
-                                    tuple(self.fixed_size[::-1]),  # [w, h]
+                                    tuple(self.fixed_size[::-1]),  # 指定调整后图像的尺寸，如果不加就输出和原图尺寸相同的图片 [::-1],翻转顺序，猜测可能是上面位置计算时，用的都是w*h的形式，做已这边size也是w*h的形式。源码是(x,y)计算的
                                     flags=cv2.INTER_LINEAR)
-
+        # 对keypoints也进行仿射变换
         if "keypoints" in target:
             kps = target["keypoints"]
             mask = np.logical_and(kps[:, 0] != 0, kps[:, 1] != 0)
@@ -331,6 +344,7 @@ class AffineTransform(object):
         # plt.imshow(resize_img)
         # plt.show()
 
+        # 保存变换矩阵
         target["trans"] = trans
         target["reverse_trans"] = reverse_trans
         return resize_img, target
@@ -367,7 +381,10 @@ class RandomHorizontalFlip(object):
 
         return image, target
 
-
+'''
+先生成一个高斯核，然后生成一个全0的heatmap，然后根据ann的缩放位置，以高斯核为半径替换heatmap中的值，heatmap的值会乘以权重。
+生成的heatmap没有归一化，会在数据集中取出时，通过transformer中的normalize归一。就是上面的Normalize方法。
+'''
 class KeypointToHeatMap(object):
     def __init__(self,
                  heatmap_hw: Tuple[int, int] = (256 // 4, 192 // 4),
@@ -391,24 +408,28 @@ class KeypointToHeatMap(object):
         self.kernel = kernel
 
     def __call__(self, image, target):
-        kps = target["keypoints"]
-        num_kps = kps.shape[0]
-        kps_weights = np.ones((num_kps,), dtype=np.float32)
+        kps = target["keypoints"] # dataset list中每个info，info中的keypoints是个17*2的数组 key_num,（h,w），记录每个img中每个keypoint位置
+        num_kps = kps.shape[0] # 多少个keypoint
+        kps_weights = np.ones((num_kps,), dtype=np.float32) # 生成一个[17，]初始全为1的2维tensor
         if "visible" in target:
             visible = target["visible"]
-            kps_weights = visible
-
+            kps_weights = visible # 先把每个keypoint可见度配个kps_weight，下面先用
+        #   [0]:h,[1]:w.针对每个keypoint生成一个全0的热力图作为初始化，（17，heatmap_h,heatmap_w）。
         heatmap = np.zeros((num_kps, self.heatmap_hw[0], self.heatmap_hw[1]), dtype=np.float32)
-        heatmap_kps = (kps / 4 + 0.5).astype(np.int)  # round
+        heatmap_kps = (kps / 4 + 0.5).astype(np.int)  # round，把原始的keypoints坐标也都/4,因为热力图的大小是原始尺寸的1/4
         for kp_id in range(num_kps):
             v = kps_weights[kp_id]
             if v < 0.5:
                 # 如果该点的可见度很低，则直接忽略
                 continue
 
-            x, y = heatmap_kps[kp_id]
-            ul = [x - self.kernel_radius, y - self.kernel_radius]  # up-left x,y
-            br = [x + self.kernel_radius, y + self.kernel_radius]  # bottom-right x,y
+            x, y = heatmap_kps[kp_id] #得到第kp_id个关键点缩放后的坐标。x是h，y是w
+            '''
+                下面计算不在热力核范围内的坐标。在核范围内用高斯核值，其他不在范围内的都是0.
+            '''
+            # x减去radius是向上，所以x是h，y减去radius是向左，因此y是w
+            ul = [x - self.kernel_radius, y - self.kernel_radius]  # up-left x,y，上左
+            br = [x + self.kernel_radius, y + self.kernel_radius]  # bottom-right x,y 下右
             # 如果以xy为中心kernel_radius为半径的辐射范围内与heatmap没交集，则忽略该点(该规则并不严格)
             if ul[0] > self.heatmap_hw[1] - 1 or \
                     ul[1] > self.heatmap_hw[0] - 1 or \
@@ -428,15 +449,16 @@ class KeypointToHeatMap(object):
             img_y = (max(0, ul[1]), min(br[1], self.heatmap_hw[0] - 1))
 
             if kps_weights[kp_id] > 0.5:
-                # 将高斯核有效区域复制到heatmap对应区域
+                # 将高斯核有效区域复制到heatmap对应区域(每个keypoint所在层的heatmap)
                 heatmap[kp_id][img_y[0]:img_y[1] + 1, img_x[0]:img_x[1] + 1] = \
                     self.kernel[g_y[0]:g_y[1] + 1, g_x[0]:g_x[1] + 1]
 
         if self.use_kps_weights:
-            kps_weights = np.multiply(kps_weights, self.kps_weights)
+            kps_weights = np.multiply(kps_weights, self.kps_weights) # 形成的heatmap * 权重值
 
         # plot_heatmap(image, heatmap, kps, kps_weights)
 
+        # 把生成的heatmap和权重放到info里返回,heatmap没有归一化，在dataset.__getitem__方法中，连着图像一起归一化（0-1）了。
         target["heatmap"] = torch.as_tensor(heatmap, dtype=torch.float32)
         target["kps_weights"] = torch.as_tensor(kps_weights, dtype=torch.float32)
 
